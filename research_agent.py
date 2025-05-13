@@ -1,6 +1,7 @@
 from autogen import AssistantAgent, UserProxyAgent, register_function
 import json
 from dotenv import load_dotenv
+import traceback
 
 # Local imports
 from config import LLM_CONFIG
@@ -16,7 +17,11 @@ search_tool = ResearchPaperSearchTool()
 
 
 def search_wrapper(topic: str, year: int, comparison: str, min_citations: int) -> str:
-    return search_tool.search(topic, year, comparison, min_citations)
+    try:
+        return search_tool.search(topic, year, comparison, min_citations)
+    except Exception as e:
+        print(f"Error during search_tool.search: {e}")
+        return "[]"
 
 
 search_tool_spec = {
@@ -95,7 +100,7 @@ register_function(
 )
 
 if __name__ == "__main__":
-    query = "Find papers about fruit published after 2021 and has 1 citations"
+    query = "Find papers about horses published after 2020 and has 10 citations"
 
     final_response_content = None
 
@@ -113,38 +118,52 @@ if __name__ == "__main__":
                 final_response_content = msg["content"].strip()
                 break
 
-        if final_response_content is None and all_messages:
+        if final_response_content is None:
             last_assistant_message = next((m for m in reversed(all_messages) if m.get("role") == "assistant"), None)
-            if last_assistant_message:
-                final_response_content = last_assistant_message["content"]
+            if last_assistant_message and last_assistant_message.get("content"):
+                final_response_content = str(last_assistant_message["content"]).strip()
             else:
-                final_response_content = user_proxy.last_message(assistant)["content"] if user_proxy.last_message(
-                    assistant) else "No response captured."
+                last_user_proxy_message = user_proxy.last_message(assistant)
+                if last_user_proxy_message and last_user_proxy_message.get("content"):
+                    final_response_content = str(last_user_proxy_message["content"]).strip()
+                else:
+                    final_response_content = "[]"
+                    print("Warning: No substantive response captured from the assistant. Defaulting to empty list.")
 
-        print("\n=== Raw Agent Response (Captured for Evaluation) ===")
-        print(final_response_content)
+        print("=== Formatted Agent Response ===")
+        parsed_successfully = False
+        if final_response_content:
+            try:
+                if isinstance(final_response_content, str):
+                    parsed_json = json.loads(final_response_content)
+                    print(json.dumps(parsed_json, indent=2))
+                    parsed_successfully = True
+                else:
+                    print("Error: Final response content captured was not a string.")
+                    print("Raw content received:")
+                    print(final_response_content)
+                    final_response_content = str(final_response_content)
 
-        print("\n=== Formatted Results (Attempting to Parse as JSON) ===")
-        try:
-            if isinstance(final_response_content, str):
-                parsed_json = json.loads(final_response_content)
-                print(json.dumps(parsed_json, indent=2))
-            else:
-                print("Final response content was not a string, cannot parse as JSON.")
+
+            except json.JSONDecodeError:
+                print("Error: Failed to parse the final agent response as JSON.")
+                print("Raw response content was:")
                 print(final_response_content)
-        except json.JSONDecodeError:
-            print("Failed to parse the final response as JSON. Raw response was printed above.")
-        except Exception as e:
-            print(f"An unexpected error occurred during JSON parsing: {e}")
+            except Exception as e:
+                print(
+                    f"An unexpected error occurred during JSON parsing of agent response: {e}")
+                print("Raw response content was:")
+                print(final_response_content)
+        else:
+            print("No content received from the agent.")
+
+        if not isinstance(final_response_content, str):
+            final_response_content = str(final_response_content if final_response_content is not None else "[]")
 
         print("\n=== Evaluation ===")
-        evaluation_input = final_response_content if isinstance(final_response_content, str) else str(
-            final_response_content)
-        evaluation = evaluate_response(query, evaluation_input)
+        evaluation = evaluate_response(query, final_response_content)
         print(json.dumps(evaluation, indent=2))
 
     except Exception as e:
         print(f"\nMain execution failed: {str(e)}")
-        import traceback
-
         traceback.print_exc()

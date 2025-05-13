@@ -9,14 +9,26 @@ import json
 # ======================
 class ResearchPaperSearchTool:
     def search(self, topic: str, year: int, comparison: str, min_citations: int) -> str:
+        """
+        Searches for research papers.
+        Note: The min_citations parameter is accepted, but the current arXiv API backend
+        does not provide citation data, so results are not filtered by it.
+        The 'citations' field in the results will reflect this.
+        """
         try:
-            results = self._search_arxiv(topic, year, comparison)
+            results = self._search_arxiv(topic, year, comparison, min_citations_requested=min_citations)
             return json.dumps(results)
+        except requests.exceptions.RequestException as re:
+            print(f"HTTP Request error during search: {str(re)}")
+            return json.dumps([{"error": "Failed to connect to arXiv API.", "details": str(re)}])
+        except ET.ParseError as pe:
+            print(f"XML Parsing error: {str(pe)}")
+            return json.dumps([{"error": "Failed to parse arXiv API response.", "details": str(pe)}])
         except Exception as e:
-            print(f"Search error: {str(e)}")
-            return json.dumps([])
+            print(f"Generic search error: {str(e)}")
+            return json.dumps([{"error": "An unexpected error occurred during search.", "details": str(e)}])
 
-    def _search_arxiv(self, query: str, year: int, comparison: str) -> List[Dict]:
+    def _search_arxiv(self, query: str, year: int, comparison: str, min_citations_requested: int) -> List[Dict]:
         url = "http://export.arxiv.org/api/query"
         params = {
             "search_query": f"all:{query}",
@@ -27,32 +39,38 @@ class ResearchPaperSearchTool:
         }
 
         response = requests.get(url, params=params)
+        response.raise_for_status()
         root = ET.fromstring(response.content)
 
         papers = []
         for entry in root.findall('{http://www.w3.org/2005/Atom}entry'):
-            paper = self._parse_entry(entry, year, comparison)
-            if paper:
-                papers.append(paper)
+            paper_dict = self._parse_entry(entry, year, comparison, min_citations_requested)
+            if paper_dict:
+                papers.append(paper_dict)
+        return papers[:10] # return top 10 papers
 
-        return papers[:5]
+    def _parse_entry(self, entry, target_year: int, comparison: str, min_citations_requested: int) -> Dict:
+        try:
+            published_str = entry.findtext('{http://www.w3.org/2005/Atom}published')
+            if not published_str:
+                return None
+            paper_year = datetime.strptime(published_str, '%Y-%m-%dT%H:%M:%SZ').year
 
-    def _parse_entry(self, entry, target_year: int, comparison: str) -> Dict:
-        published = entry.find('{http://www.w3.org/2005/Atom}published').text
-        paper_year = datetime.strptime(published, '%Y-%m-%dT%H:%M:%SZ').year
+            if comparison == "before" and paper_year >= target_year:
+                return None
+            if comparison == "after" and paper_year <= target_year:
+                return None
+            if comparison == "in" and paper_year != target_year:
+                return None
 
-        if comparison == "before" and paper_year >= target_year:
+            return {
+                "title": entry.findtext('{http://www.w3.org/2005/Atom}title', 'N/A').strip(),
+                "authors": [author.findtext('{http://www.w3.org/2005/Atom}name', 'N/A')
+                            for author in entry.findall('{http://www.w3.org/2005/Atom}author')],
+                "year": paper_year,
+                "link": entry.findtext('{http://www.w3.org/2005/Atom}id', 'N/A'),
+                "summary": entry.findtext('{http://www.w3.org/2005/Atom}summary', 'N/A').strip(),
+                "citations": "N/A (arXiv API)"
+            }
+        except Exception as e:
             return None
-        if comparison == "after" and paper_year <= target_year:
-            return None
-        if comparison == "in" and paper_year != target_year:
-            return None
-
-        return {
-            "title": entry.find('{http://www.w3.org/2005/Atom}title').text.strip(),
-            "authors": [a.find('{http://www.w3.org/2005/Atom}name').text
-                        for a in entry.findall('{http://www.w3.org/2005/Atom}author')],
-            "year": paper_year,
-            "link": entry.find('{http://www.w3.org/2005/Atom}id').text,
-            "summary": entry.find('{http://www.w3.org/2005/Atom}summary').text.strip()
-        }

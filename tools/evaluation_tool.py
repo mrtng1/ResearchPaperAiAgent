@@ -1,15 +1,9 @@
 from typing import Dict
 import autogen
 import json
+import os
 from config import LLM_CONFIG
 
-def _print_debug_info_on_parse_fail(query: str, agent_response: str, critic_raw_output: str, error_details: str):
-    print("\n--- CRITIC PARSING FAILURE DEBUG INFO ---")
-    print(f"User Query to Agent:\n{query}")
-    print(f"Agent's Response to Evaluate:\n{agent_response}")
-    print(f"Critic's Raw Output:\n{critic_raw_output}")
-    print(f"Parsing Error Details: {error_details}")
-    print("--- END DEBUG INFO ---\n")
 
 def _parse_critic_evaluation(content: str, user_query_for_debug: str, agent_response_for_debug: str) -> Dict:
     default_error_response = {
@@ -18,6 +12,7 @@ def _parse_critic_evaluation(content: str, user_query_for_debug: str, agent_resp
         "feedback": "Evaluation parsing failed or critic returned non-JSON/malformed content."
     }
     json_str_for_error_reporting = content
+
     try:
         cleaned_content = content.strip()
         if cleaned_content.startswith("```json"):
@@ -46,46 +41,61 @@ def _parse_critic_evaluation(content: str, user_query_for_debug: str, agent_resp
                 else:
                     if not isinstance(parsed_json[key], int):
                         try:
-                            parsed_json[key] = int(str(parsed_json[key])) # Attempt to cast if LLM returns "5"
+                            parsed_json[key] = int(str(parsed_json[key]))
                         except (ValueError, TypeError):
                              raise ValueError(f"Field '{key}' must be an integer, got {type(parsed_json[key])} with value '{parsed_json[key]}'")
-                    if not (1 <= parsed_json[key] <= 5):
-                        # Allow 0 for error cases from previous steps, but critic itself should score 1-5
-                        if parsed_json[key] == 0 and "parsing failed" in parsed_json.get("feedback","").lower(): # Propagating earlier error
+                    if not (0 <= parsed_json[key] <= 5):
+                        if parsed_json[key] == 0 and "parsing failed" in parsed_json.get("feedback","").lower():
                             pass
                         else:
-                            raise ValueError(f"Score for '{key}' ({parsed_json[key]}) is out of range (1-5).")
+                            raise ValueError(f"Score for '{key}' ({parsed_json[key]}) is out of valid range (0-5, typically 1-5 from critic).")
             return parsed_json
         else:
             error_msg = "Could not find valid JSON object in critic's response."
-            default_error_response["feedback"] = f"{error_msg} Raw response: {content}"
-            _print_debug_info_on_parse_fail(user_query_for_debug, agent_response_for_debug, content, default_error_response["feedback"])
+            default_error_response["feedback"] = f"{error_msg} Raw response snippet: {content[:200]}..."
             return default_error_response
 
     except json.JSONDecodeError as e:
         error_msg = f"JSON decoding failed: {str(e)}."
-        default_error_response["feedback"] = f"{error_msg} Problematic content: {json_str_for_error_reporting}"
-        _print_debug_info_on_parse_fail(user_query_for_debug, agent_response_for_debug, content, default_error_response["feedback"])
+        default_error_response["feedback"] = f"{error_msg} Problematic content snippet: {json_str_for_error_reporting[:200]}..."
         return default_error_response
     except ValueError as e:
         error_msg = f"Validation error in parsed JSON: {str(e)}."
-        default_error_response["feedback"] = f"{error_msg} Full content: {content}"
-        _print_debug_info_on_parse_fail(user_query_for_debug, agent_response_for_debug, content, default_error_response["feedback"])
+        default_error_response["feedback"] = f"{error_msg} Full content snippet: {content[:200]}..."
+        print(f"[Critic Evaluation Error] Validation error: {str(e)}. Enable verbose logs for details.")
         return default_error_response
     except Exception as e:
         error_msg = f"An unexpected error occurred during critic evaluation parsing: {str(e)}."
-        default_error_response["feedback"] = f"{error_msg} Full content: {content}"
-        _print_debug_info_on_parse_fail(user_query_for_debug, agent_response_for_debug, content, default_error_response["feedback"])
+        default_error_response["feedback"] = f"{error_msg} Full content snippet: {content[:200]}..."
+        print(f"[Critic Evaluation Error] Unexpected parsing error: {str(e)}. Enable verbose logs for details.")
         return default_error_response
 
-def evaluate_response(user_query: str, agent_response: str) -> Dict:
+def is_valid_json_object_message(message_dict) -> bool:
     """
-    Evaluates an agent's response using an LLM-based critic.
-    This version is tailored based on the provided specification, assuming it evaluates
-    a research assistant agent as per the user's main script context.
+    Checks if the message content is a string that represents a valid JSON object.
+    Handles potential markdown code blocks around the JSON.
     """
-    agent_type_description = "AI research assistant"
+    content = message_dict.get("content", "")
+    if not isinstance(content, str):
+        return False
 
+    content_stripped = content.strip()
+    if content_stripped.startswith("```json"):
+        content_stripped = content_stripped[len("```json"):]
+    if content_stripped.endswith("```"):
+        content_stripped = content_stripped[:-len("```")]
+    content_stripped = content_stripped.strip()
+
+    if content_stripped.startswith("{") and content_stripped.endswith("}"):
+        try:
+            json.loads(content_stripped)
+            return True
+        except json.JSONDecodeError:
+            return False
+    return False
+
+def evaluate_response(user_query: str, agent_response: str) -> Dict:
+    agent_type_description = "AI research assistant"
     critic_system_message = (
         f"You are an AI Critic. Your task is to meticulously evaluate the response of an {agent_type_description} "
         "based on a user's query and a defined set of criteria. "
@@ -97,7 +107,8 @@ def evaluate_response(user_query: str, agent_response: str) -> Dict:
     critic_agent = autogen.AssistantAgent(
         name="critic_agent",
         llm_config=LLM_CONFIG,
-        system_message=critic_system_message
+        system_message=critic_system_message,
+        is_termination_msg=is_valid_json_object_message
     )
 
     critic_prompt = f"""
@@ -179,16 +190,19 @@ Begin evaluation. Provide ONLY the JSON object.
 
     critic_json_response = ""
     chat_history = evaluation_request_proxy.chat_messages.get(critic_agent, [])
+
     if chat_history:
-        critic_json_response = chat_history[-1]['content']
+        critic_json_response = chat_history[0].get('content', "")
+        if len(chat_history) > 1:
+            print(f"Warning: Critic agent sent {len(chat_history)} messages. Expected 1. Using the first.")
+            for i, msg_data in enumerate(chat_history):
+                print(f"Critic Message {i+1}: {msg_data.get('content','')[:200]}...")
     else:
-        # This situation indicates a problem in the chat flow or message recording.
-        # Try to get the last message from the proxy itself if available, as a fallback.
         last_msg_obj = evaluation_request_proxy.last_message()
-        if last_msg_obj and last_msg_obj.get("role") != "user": # Ensure it's not the proxy's own initial message
+        if last_msg_obj and last_msg_obj.get("role") != "user":
              critic_json_response = last_msg_obj.get("content","")
-        if not critic_json_response:
-            print("Error: No chat history or suitable last message found with the critic agent.")
-            _print_debug_info_on_parse_fail(user_query, agent_response, "", "No response content from critic agent.")
+
+    if not critic_json_response:
+        print("Error: No response content retrieved from the critic agent. Evaluation cannot proceed.")
 
     return _parse_critic_evaluation(critic_json_response, user_query, agent_response)
