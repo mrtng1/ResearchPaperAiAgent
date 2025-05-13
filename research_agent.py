@@ -43,7 +43,6 @@ search_tool_spec = {
     }
 }
 
-# Update the assistant's system message
 assistant = AssistantAgent(
     name="research_assistant",
     system_message="You are an AI research assistant. Use the search tool to find academic papers. "
@@ -74,7 +73,7 @@ register_function(
 
 
 if __name__ == "__main__":
-    query = "Find papers about ___ published after ____ and has _ citations"
+    query = "Find papers about fruit published after 2021 and has 1 citations"
 
     try:
         user_proxy.initiate_chat(
