@@ -40,7 +40,7 @@ search_tool_spec = {
                     "description": "Specify relation to the year: 'after' (published after year), 'before' (published before year), 'in' (published in that exact year)."
                 },
                 "min_citations": {"type": "integer",
-                                  "description": "Minimum number of citations (Note: This feature is not effectively used by the current tool version)."}
+                                  "description": "Minimum number of citations."}
             },
             "required": ["topic", "year", "comparison"]
         }
@@ -65,7 +65,6 @@ assistant = AssistantAgent(
 )
 
 
-# More robust termination message checker
 def is_final_json_list(message_dict) -> bool:
     """
     Checks if the message content is a string that starts with '[' and ends with ']',
