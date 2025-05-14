@@ -8,21 +8,12 @@ from config import LLM_CONFIG
 from tools.websearch_tool import ResearchPaperSearchTool
 from tools.evaluation_tool import evaluate_response
 
-load_dotenv()
+load_dotenv() # load config
 
 # ======================
 # Agent Setup
 # ======================
 search_tool = ResearchPaperSearchTool()
-
-
-def search_wrapper(topic: str, year: int, comparison: str, min_citations: int) -> str:
-    try:
-        return search_tool.search(topic, year, comparison, min_citations)
-    except Exception as e:
-        print(f"Error during search_tool.search: {e}")
-        return "[]"
-
 
 search_tool_spec = {
     "type": "function",
@@ -64,7 +55,6 @@ assistant = AssistantAgent(
     }
 )
 
-
 def is_final_json_list(message_dict) -> bool:
     """
     Checks if the message content is a string that starts with '[' and ends with ']',
@@ -81,6 +71,12 @@ def is_final_json_list(message_dict) -> bool:
                 return False
     return False
 
+def search_wrapper(topic: str, year: int, comparison: str, min_citations: int) -> str:
+    try:
+        return search_tool.search(topic, year, comparison, min_citations)
+    except Exception as e:
+        print(f"Error during search_tool.search: {e}")
+        return "[]"
 
 user_proxy = UserProxyAgent(
     name="user_proxy",
@@ -132,7 +128,6 @@ if __name__ == "__main__":
         print("=== Formatted Agent Response ===")
         parsed_successfully = False
         if final_response_content:
-            try:
                 if isinstance(final_response_content, str):
                     parsed_json = json.loads(final_response_content)
                     print(json.dumps(parsed_json, indent=2))
@@ -142,19 +137,6 @@ if __name__ == "__main__":
                     print("Raw content received:")
                     print(final_response_content)
                     final_response_content = str(final_response_content)
-
-
-            except json.JSONDecodeError:
-                print("Error: Failed to parse the final agent response as JSON.")
-                print("Raw response content was:")
-                print(final_response_content)
-            except Exception as e:
-                print(
-                    f"An unexpected error occurred during JSON parsing of agent response: {e}")
-                print("Raw response content was:")
-                print(final_response_content)
-        else:
-            print("No content received from the agent.")
 
         if not isinstance(final_response_content, str):
             final_response_content = str(final_response_content if final_response_content is not None else "[]")
